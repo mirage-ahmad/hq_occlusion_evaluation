@@ -1,0 +1,6 @@
+matplotlib
+transformers
+numpy
+opencv-python
+Pillow
+accelerate

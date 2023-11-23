@@ -10,13 +10,6 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import random
 
-# Load the VitMatte model and processor
-vitmat_processor = VitMatteImageProcessor.from_pretrained("hustvl/vitmatte-base-composition-1k")
-vitmat_model = VitMatteForImageMatting.from_pretrained("hustvl/vitmatte-base-composition-1k")
-
-segformer_processor = SegformerImageProcessor.from_pretrained("nvidia/mit-b0")
-segformer_model = SegformerForSemanticSegmentation.from_pretrained("nvidia/mit-b0")
-
 
 def visualize_segmentation(image, mask, alpha=0.5):
     """
@@ -63,24 +56,31 @@ def create_trimap(mask, dilate_size=30, erode_size=5):
     kernel = np.ones((dilate_size, dilate_size), np.uint8)
     dilated = cv2.dilate(mask, kernel, iterations=1)
 
-    cv2.imshow('dilated', 255 * dilated)
-
     kernel = np.ones((erode_size, erode_size), np.uint8)
     eroded = cv2.erode(mask, kernel, iterations=1)
-    cv2.imshow('eroded', 255 * eroded)
 
     trimap = np.where(dilated != eroded, 128, mask * 255).astype(np.uint8)
-    cv2.imshow('trimap', trimap)
 
     return trimap
 
 
 def process_frame(frame):
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    # Load the VitMatte model and processor
+    vitmat_processor = VitMatteImageProcessor.from_pretrained("hustvl/vitmatte-base-composition-1k")
+    vitmat_model = VitMatteForImageMatting.from_pretrained("hustvl/vitmatte-base-composition-1k", device_map=device)
+    # vitmat_model = vitmat_model.to(device)
+
+    segformer_processor = SegformerImageProcessor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512")
+    segformer_model = SegformerForSemanticSegmentation.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512",
+                                                                       device_map=device)
+    # segformer_model = segformer_model.to(device)
+
     # Convert frame to PIL Image
     frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-
     # Process the frame through Segformer
-    inputs = segformer_processor(images=frame_pil, return_tensors="pt")
+    inputs = segformer_processor(images=frame_pil, return_tensors="pt").to(device)
     outputs = segformer_model(**inputs)
     logits = outputs.logits
 
@@ -95,10 +95,10 @@ def process_frame(frame):
     # Second, apply argmax on the class dimension
     pred_seg = upsampled_logits.argmax(dim=1)[0]
 
-    visualize_segmentation(frame_pil, pred_seg)
+    visualize_segmentation(frame_pil, pred_seg.cpu())
 
     # Convert logits to binary mask (assuming a certain class as foreground)
-    binary_mask = pred_seg != 0  # Replace with the ID of your desired foreground class
+    binary_mask = pred_seg == 12  # Replace with the ID of your desired foreground class
     binary_mask = binary_mask.cpu().numpy().astype(np.uint8)
 
     # Generate trimap from binary mask
@@ -111,7 +111,7 @@ def process_frame(frame):
 
     # Process with VitMatte
     trimap_pil = Image.fromarray(trimap).convert("L")
-    inputs = vitmat_processor(images=frame_pil, trimaps=trimap_pil, return_tensors="pt")
+    inputs = vitmat_processor(images=frame_pil, trimaps=trimap_pil, return_tensors="pt").to(device)
     with torch.no_grad():
         outputs = vitmat_model(**inputs)
         alphas = outputs.alphas
@@ -140,7 +140,7 @@ def process_frame(frame):
 
 
 # Open the video file
-video_path = 's_e9d7f0e1-3a8f-38ef-ba86-8a7eca835af5_v_Linguana-PoC-AzhytlKRga4-MX.mp4'
+video_path = 'input.mp4'
 cap = cv2.VideoCapture(video_path)
 
 # Define the codec and create VideoWriter object to save the output
